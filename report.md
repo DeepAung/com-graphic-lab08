@@ -69,9 +69,29 @@ Same test as 2.1: let the light circle with knob = 0 (no flip) and watch a full 
 
 ## Write-up 3
 
+1. In your mode 2 picture, where is the anisotropy ratio above 4? Show that this is the same region where trilinear blurs the grout lines in mode 0. Use Equation 4 to explain why it sits there.
+
+From the probe table, ratio crosses 4 between 2.8 m (ratio 2.89) and 4.1 m (ratio 4.18) from the camera — the CPU check confirms it exactly: ratio > 4 starts at row 357 in the middle column, row 391 at the left edge (both ~3.9 m away), covering 37.7% of the floor's pixels. That's a few metres out, not just near the horizon. In mode 0 with trilinear, the grout lines start smearing into flat grey starting at roughly that same distance, because trilinear always picks its mip level from the *longer* footprint axis (ρ in Eq 3/4 uses `max`), so once the short axis is much shorter than the long one (ratio > 4), trilinear is already over-blurring the short axis to match the long one — it has no way to sharpen one direction while blurring the other, which is exactly what anisotropic filtering is for.
+
+2. Your timing table against the chapter: 9.2.2 says anisotropic ×16 costs about 15% more than trilinear. What does it cost on your GPU, and how many texels does each filter actually read per pixel in the region where the ratio is 16?
+
+On my GPU aniso16 costs 6.70x trilinear (1.405 ms vs 0.210 ms), nowhere near the chapter's ~15%. In the ratio-16 region, trilinear always reads 8 texels (bilinear, 2x2, at two mip levels, blended), while aniso16 takes up to 16 trilinear samples along the long axis there, i.e. up to 16 x 8 = 128 texels per pixel — 16x more texels than trilinear in that specific region. The measured 6.70x frame average is far below that 16x worst case because only 37.7% of the floor even has ratio > 4, and most of that is nowhere near the ratio-16 extreme at the very horizon — aniso only pays the extra cost where the footprint is actually that anisotropic, so the whole-frame average sits well under the per-pixel worst case.
+
+3. The mip-level bands in mode 1 are not straight lines across the screen. Why do they bend towards the sides? Answer with Equation 3.
+
+rho in Eq 3 depends on the actual 3D distance from the camera to that floor point, not just the screen row. A pixel at the edge of the screen, at the same row as a pixel in the middle, is looking along a ray angled further from straight-ahead, so it has to travel a longer slant distance to hit the floor at that row — it's actually farther away in world space. Farther away means a bigger texel footprint (Eq 3), so the same mip level is reached sooner (at a nearer-looking row) off to the sides than in the middle, bending each constant-lod band into a curve instead of a straight horizontal line.
+
+4. Your prediction for the sweep against the measurement. Where were you wrong?
+
 ### Prediction
 
+Ranking by texels fetched per sample: nearest (1) < bilinear (4) < trilinear (8) < aniso4 (up to 32) < aniso16 (up to 128), so I expect that same cost order, cheapest to priciest. Naively, aniso16 at 128 vs trilinear's 8 texels suggests up to 16x the cost, but since aniso only spends extra samples where the footprint is actually anisotropic (most of the floor isn't), I expect the real frame-average multiple to land well under 16x — plausibly close to the chapter's ~15% figure if most pixels have a low ratio.
+
 ### After
+
+Measured (median ms/frame, 16 `texture()` calls a pixel, 3 rounds): nearest 0.625 (2.98x), bilinear 0.896 (4.27x), trilinear 0.210 (1.00x), aniso4 0.850 (4.05x), aniso16 1.405 (6.70x).
+
+Where I was wrong: trilinear was the *cheapest* of all five, not third — nearest and bilinear were both more expensive despite reading far fewer texels per sample. The panel's own note explains it: nearest and bilinear never read mips, so at distance they're still reading from the full 1024x1024 level-0 texture, scattered across many texels per screen pixel — the cost there is dominated by cache misses on incoherent memory access, not raw texel count. Trilinear and the aniso filters read from small, cache-friendly mip levels instead, so despite fetching more texels per sample in principle, they're faster in practice. My texel-count model predicted the *relative* ranking of the mip-aware filters correctly (trilinear < aniso4 < aniso16) but completely missed that the non-mipped filters would be slower, not faster, than trilinear. aniso16 did land far under the naive 16x worst case (6.70x measured), consistent with my reasoning, though still well above the chapter's ~15% — likely GPU-specific.
 
 ## Write-up 4
 
