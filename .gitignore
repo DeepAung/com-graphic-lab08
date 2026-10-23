@@ -6,5 +6,4 @@ compile_commands.json
 external/stb/*.h
 *.o
 *.spv
-report/
 .DS_Store
