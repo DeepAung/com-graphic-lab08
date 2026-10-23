@@ -49,6 +49,24 @@ There's only few too dark (20.4%) caused by the groove of the wood. There's no t
 
 ## Write-up 2
 
+1. Bind the DirectX map without the flip and let the light circle the sphere (the chapter's 360° test). Describe exactly what goes wrong and when: at which light positions do the bumps look right, and at which do they look like dents? Explain this from Equation 2.
+
+When change to DirectX with knob = 0, and when use OpenGL with knob = 1: both shows weird lighting in a little circle. The shadow is diagonal with the main lighting. Which feels unnatural
+
+2. Bind the correct map as SRGB (key G). Which way do the normals tilt, and why does a flat area, (128, 128, 255), stop being flat? Compute the normal that this texel turns into.
+
+Normals tilt toward negative x and negative y. The sampler decodes the map with L(c) before my shader even touches it, and L(c) < c for every value except 0 and 1, so every mid-range byte gets pulled down. A flat texel (128, 128, 255) should decode to n = (0, 0, 1), but the x and y channels (byte 128 -> c = 0.502) get wrongly decoded to L(0.502) = 0.2159 first, then my `2v - 1` turns that into -0.568 instead of 0. The z channel is untouched since L(1) = 1 (fixed point). So the texel turns into n = (-0.568, -0.568, 1.0), normalized to about (-0.443, -0.443, 0.779) instead of (0, 0, 1).
+
+3. The panel prints the mean length of the decoded normal at mip 0, 2, 4 and 6. Why does it shrink, and why does the chapter say to renormalise normal-map mips? After you renormalise, what has still been lost about the surface?
+
+Mip levels are built by averaging neighbouring texels. That's fine for colour, but normal map bytes decode to unit vectors, and averaging vectors that point in different directions gives a shorter vector, not another unit one. Coarser mips average over a wider spread of bump directions, so the length shrinks more (0.89 by mip 6, one texel per bump).
+
+Renormalizing matters because lighting does dot(N, L); a shrunk N darkens the surface for no physical reason. After renormalizing, the length is gone, and with it the info about how spread-out the normals were at that mip, so the surface still shades like it's perfectly smooth at every mip, instead of rougher/blurrier like a minified bumpy surface actually should look.
+
+4. Run the 360° test on a normal map from an image model or from a texture site, with --normal yours.png. Which convention is it, and how did the test tell you?
+
+Same test as 2.1: let the light circle with knob = 0 (no flip) and watch a full rotation. If bumps stay bumps the whole way round, it's OpenGL convention. If they look like dents and only fix once I flip (knob = 1), it's DirectX convention. No numeric readout for a custom map, just whichever knob stays bump-shaped through the whole rotation.
+
 ## Write-up 3
 
 ### Prediction

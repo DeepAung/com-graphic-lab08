@@ -14,16 +14,16 @@ layout(location = 2) out vec3 outTangent;
 layout(location = 3) out vec3 outBitangent;
 
 void main() {
-  vec4 world  = u.model * vec4(inPos, 1.0);
-  outUV       = inUV;
+  vec4 world = u.model * vec4(inPos, 1.0);
+  outUV = inUV;
   gl_Position = u.proj * u.view * world;
 
-  // TODO(TASK 2a)
   // The tangent frame in world space. A normal is turned by the normal matrix,
   // transpose(inverse(mat3(u.model))); a tangent lies along the surface, so it is
   // turned by mat3(u.model) like any direction. B = cross(N, T) * inTangent.w.
   // For now every output is the object-space normal: no tangent frame at all.
-  outNormal    = inNormal;
-  outTangent   = inNormal;
-  outBitangent = inNormal;
+  mat3 normalMatrix = transpose(inverse(mat3(u.model)));
+  outNormal = normalize(normalMatrix * inNormal);
+  outTangent = normalize(mat3(u.model) * inTangent.xyz);
+  outBitangent = cross(outNormal, outTangent) * inTangent.w;
 }
