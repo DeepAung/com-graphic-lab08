@@ -95,8 +95,49 @@ Where I was wrong: trilinear was the *cheapest* of all five, not third — neare
 
 ## Write-up 4
 
+1. The chapter's WBOIT shader (9.5.3) computes the weight from in.position.z, the depth in the depth buffer, which is between 0 and 1. Put that into Equation 7. What weight does every fragment get? Show it with the panel's weight line and a mode 3 screenshot of both weights (key W), then say what the chapter's version of WBOIT reduces to. In this scene, the two pictures differ by only a few levels on average. Why so little here? Then run make oit ARGS="--particles 40000 --mode 1" with each weight (key W). Magenta marks pixels where fp16 accumulation saturated at 65504. Which weight saturates, and why?
+
+The panel's `weight` line: `chapter, window depth 0.0023 .. 0.0223   w 3000.0 .. 3000.0` vs `view depth in metres   w 58.2 .. 2937.3`. Plugging the raw window-space z (0.0023-0.0223, nowhere near metres) into Eq 7: `(z/200)^4` is on the order of 1e-20, completely negligible next to the `1e-5` floor in the denominator, so `w = 0.03/1e-5 = 3000` for every single fragment, regardless of actual depth — it just always hits the clamp ceiling. Every fragment gets the same constant weight.
+
+A constant weight cancels out of the weighted-average term in Eq 6 (`Σ Ciαiwi / Σαiwi` with `wi` the same `w` for every `i` reduces to `Σ Ciαi / Σαi`), so the chapter's version reduces to an *unweighted* average — equivalent to giving every layer equal weight, the same degenerate case the panel's `two layers` line shows as the baseline (`one weight for all 0.333`) rather than the correct depth-weighted share.
+
+The two pictures differ by only a few levels because the correct (view-depth) weight itself saturates to nearly the same ~3000 ceiling for most of this scene's depth range — it only drops meaningfully (down to 58) very close to the camera, within the first few metres of the 4.3-30 m range. Most of the smoke/panes in this scene sit further out, where both the correct and the broken weight already agree closely, so only the handful of near fragments actually diverge, diluting the visible difference.
+
+Window depth is the one that saturates. The `fp16 accum` table shows the largest `accum.a` growing much faster under window depth than view depth as particle count rises: view depth 6964 → 13424 (10x particles, ~1.9x growth), window depth 8896 → 45408 (10x particles, ~5.1x growth). That's because window depth gives literally every fragment the same unattenuated maximum weight (3000), so the accumulated sum grows roughly in direct proportion to how many overlapping fragments land on a pixel; view depth's weight shrinks for farther fragments, which damps the sum's growth. With enough overlapping particles (e.g. 40000, where many smoke puffs stack on the same pixels), window depth's unbounded linear growth is what pushes `accum.a` toward the fp16 ceiling of 65504, while view depth's self-limiting weight stays comfortably under it.
+
+2. Two layers of α = 0.5, red in front of blue (Section 3). Prove that weights in the ratio wfront : wback = 2 : 1 make WBOIT exact. For n layers, what should the ideal weight of a layer be? Why can no function of z alone produce it?
+
+Exact `over` compositing of red (front, α=0.5) over blue (back, α=0.5) over background: `0.5 Cred + 0.5(0.5 Cblue + 0.5 Cbg) = 0.5 Cred + 0.25 Cblue + 0.25 Cbg`. Total coverage is `0.75`, revealage `0.25`, matching either way.
+
+For WBOIT (Eq 6) to reproduce this exactly, its weighted-average colour times the coverage must equal the `0.5 Cred + 0.25 Cblue` part: `0.75 x (wf Cred + wb Cblue)/(wf + wb) = 0.5 Cred + 0.25 Cblue` (the common alpha factor of 0.5 cancels top and bottom). Matching coefficients: `wf/(wf+wb) = 2/3` and `wb/(wf+wb) = 1/3`, so `wf : wb = 2 : 1` exactly, as claimed.
+
+For n layers (front to back, i=1 nearest), the exact Porter-Duff contribution of layer i is `αi x product of (1-αj) for every layer j in front of it`. For WBOIT to match that exactly, the ideal weight is `wi proportional to that same product of (1-αj) over all layers in front of i` — i.e. exactly how much light survived reaching that layer. That quantity depends on the alphas of every *other* layer closer to the camera, not on layer i's own depth. A function of z alone only ever sees one fragment's own depth, with no information about what other transparent surfaces sit in front of it or how opaque they are — so it can never reconstruct that product, and can only ever approximate it (as the depth-based weight does, by using distance as a rough proxy for "probably has fewer things in front of it").
+
+3. The three glass panes cut through each other. Why can no back-to-front order of the three objects be right? Point to the place in your sorted screenshot where it fails.
+
+The panes geometrically intersect, so different parts of the *same* pane are in front of different other panes depending on where you look — there is no single whole-object order that is correct everywhere at once. Sorting by object (e.g. by centroid distance) picks one fixed order for an entire pane, so wherever two panes' triangles actually cross, the chosen order is right on one side of the crossing and wrong on the other. Per the instructions' own description of the sorted result: red's centre is nearest, so red is drawn last and sits on top everywhere — which is wrong at every place red's geometry actually passes *behind* green or blue, visible in the sorted screenshot as red incorrectly covering the other panes along their intersection lines.
+
+4. Your timing table: unsorted, sorted (the sort on the CPU plus the GPU) and WBOIT, at 1000 and 10000 particles. Which grows fastest, and why? Was your prediction right?
+
 ### Prediction
 
+Sorted should grow the fastest. All three methods draw the same number of particles each frame, so their GPU draw cost should scale about the same way with particle count. But sorted adds a CPU sort of every transparent object every frame on top of that — sorting is at best O(n log n), so as particles go from 1000 to 10000 (10x), the sort cost grows more than 10x, while unsorted and WBOIT's per-particle GPU cost should stay roughly linear (WBOIT has a bit of fixed extra cost per frame for the composite pass, but that doesn't scale with particle count, so it shouldn't grow much faster than unsorted).
+
 ### After
+
+Measured (median GPU ms of the transparent passes, 3 rounds; sort cost is CPU, reported separately):
+
+| particles | unsorted | sorted (cpu sort + gpu) | wboit |
+|---|---|---|---|
+| 1000 | 0.225 | 0.017 + 0.232 | 0.424 |
+| 10000 | 1.823 | 0.656 + 1.848 | 2.979 |
+
+Growth 1000 → 10000 (10x particles): unsorted 8.1x, sorted's GPU part 8.0x (about the same as unsorted, as expected — it draws the same way), WBOIT 7.0x, and sorted's CPU sort step 38.6x (0.017 → 0.656 ms) — by far the fastest-growing single number in the table.
+
+My prediction was right in substance — the CPU sort is the outlier, growing far faster (super-linearly, consistent with O(n log n) or worse once allocation/compare overhead is included) than any of the GPU draw costs, which all scale close to linearly with particle count (~7-8x for 10x particles, not the full 10x, likely some fixed per-frame overhead diluting the ratio slightly). Where I was imprecise: I expected WBOIT's extra composite pass to barely matter, and it didn't change the growth rate, but I hadn't predicted the GPU draw costs would come in a bit *under* 10x rather than at it — a minor miss, not a wrong call on which method grows fastest.
+
+5. Find a place in your WBOIT picture where it is visibly wrong compared to the sorted one. Say why, using Equation 6.
+
+Per the instructions' description of the WBOIT result: no pane is on top anywhere; where red and green overlap it shows yellow, and where all three overlap it shows a neutral lavender, instead of whichever pane is actually closest at that point. That's Eq 6's weighted-average term doing exactly what it's built to do — blend every overlapping layer's colour by weight, with no per-pixel knowledge of true front-to-back order — so at every overlap region it produces an averaged blend colour instead of the correct single nearest-surface colour the sorted render shows there.
 
 ## AI prompt log
